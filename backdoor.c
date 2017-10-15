@@ -38,6 +38,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -53,6 +54,11 @@ struct {
 	char password[32]; // required password
     char buffer[BUFFSIZE]; // Input buffer
 	char dir[BUFFSIZE]; // Directory buffer
+	char snapPath[BUFFSIZE]; // File path to snap.txt
+	char snapHash[BUFFSIZE][50]; // hashes for snap
+	char snapFn[BUFFSIZE][50]; // file names for snap
+	char diffHash[BUFFSIZE][50]; // hashes for diff
+	char diffFn[BUFFSIZE][50]; // file names for diff
 } globals;
 
 // report error message & exit
@@ -251,7 +257,8 @@ int main( int argc, char ** argv)
 				}
 				/* cp <file1> <file2>: Copy <file> to <file2> */
 				else if (strncmp(globals.buffer, "cp", 2) == 0) {
-					/*********************
+					
+/*********************
 					* Extract file names *
 					*********************/
 					token = strtok(globals.buffer, " ");
@@ -471,11 +478,170 @@ int main( int argc, char ** argv)
 				}	
 				/* snap: Take snapshot of all files in the current directory and store it in memory */
 				else if (strcmp(globals.buffer, "snap") == 0) {
-					/* Add code */
+					fp = popen("md5sum *> snap.txt", "r");
+
+					
+					if(fp == NULL) {
+						die("File pointer = NULL");
+					}
+					while (fgets(buff, BUFFSIZE, fp) != NULL) {
+						printf("%s", buff);
+						writeStrToFd( connSockFd, ("%s", buff));
+					}
+					status = pclose(fp);
+					
+					char *filePath = realpath("snap.txt", globals.snapPath); // Gets file path of snap.txt for use in diff
+					printf("Snapshot path: %s\n", globals.snapPath);
+					
+					if (status == -1) {
+						die("Error in snap pclose: %s", strerror(errno));
+					}
+					else if (status == 0) {
+						printf("snap status code: %d\n", status);
+						printf("Execution successful\n");
+						writeStrToFd(connSockFd, "OK\n");
+					}
+					//Directory found (ignored by md5sum hash)
+					else if (status == 256) {
+						printf("snap status code: %d\n", status);
+						printf("Execution successful\n");
+						writeStrToFd(connSockFd, "OK\n");
+						writeStrToFd(connSockFd, "Found a directory\n");
+					}
+					else {
+						printf("snap status code: %d\n", status);
+						printf("Execution unsuccessful\n");
+						writeStrToFd(connSockFd, "Error in snap execution\n");
+					}
+					
 				}
 				/* diff: Compare the contents of the current directory to the saved sanpshot */
 				else if (strcmp(globals.buffer, "diff") == 0) {
-					/* Add code */
+					
+					// Checks that snap.txt exists (snapshot previously used)
+					if( access( "snap.txt", F_OK ) != -1) {
+						
+						char *filePath = realpath("snap.txt", globals.snapPath); // Gets file path of snap.txt
+						printf("Snapshot path: %s\n", globals.snapPath);
+						pathSet = true;
+						
+					}
+					if(access(globals.snapPath, F_OK) != -1) {
+					
+						fp = popen("md5sum *> diff.txt", "r");
+						
+						
+						if(fp == NULL) {
+							die("File pointer = NULL");
+						}
+						while (fgets(buff, BUFFSIZE, fp) != NULL) {
+							printf("%s", buff);
+							writeStrToFd( connSockFd, ("%s", buff));
+						}
+						status = pclose(fp);
+						
+						int snapSize = 0, diffSize = 0;
+						
+						fp = fopen(globals.snapPath, "r");
+						
+						// Reads snap file into char array
+						while(snapSize < BUFFSIZE && fscanf(fp, "%s %s", &globals.snapHash[snapSize], &globals.snapFn[snapSize]) == 2) {
+							snapSize++;
+						} 
+						fclose(fp);
+						
+						fp = fopen("diff.txt", "r");
+						
+						// Reads diff fiel into char array
+						while(diffSize < BUFFSIZE && fscanf(fp, "%s %s", &globals.diffHash[diffSize], &globals.diffFn[diffSize]) == 2) {
+							diffSize++;
+						} 
+						fclose(fp);
+						
+						bool fileFound = false;
+						int snapCount, diffCount;
+						
+						// Checks if file has been changed or deleted
+						for(snapCount = 0; snapCount < snapSize; snapCount++) {
+							fileFound = false;
+							
+							for(diffCount = 0; diffCount < diffSize; diffCount++) {
+								
+								// Checks for matching file name
+								if(strncmp(globals.snapFn[snapCount], globals.diffFn[diffCount], BUFFSIZE) == 0) {
+									
+									fileFound = true;
+									
+									// Checks if snap.txt or diff.txt is found so that they are not outputed to client as changed (do nothing)
+									if(strncmp(globals.diffFn[diffCount], "snap.txt", BUFFSIZE) == 0 || strncmp(globals.diffFn[diffCount], "diff.txt", BUFFSIZE) == 0) {}
+									// Prints message to client if hash does not match
+									else if(strncmp(globals.snapHash[snapCount], globals.diffHash[diffCount], BUFFSIZE) != 0) {
+										
+										writeStrToFd(connSockFd, ("%s", globals.snapFn[snapCount]));
+										writeStrToFd(connSockFd, " - was changed\n");
+									}
+								
+								}
+								
+							}
+							// File in snap hash was not found in diff hash (file deleted)
+							if(fileFound == false) {
+								writeStrToFd(connSockFd, ("%s", globals.snapFn[snapCount]));
+								writeStrToFd(connSockFd, " - was deleted\n");
+							}
+								
+						}
+						
+						// Checks if file has been added
+						for(diffCount = 0; diffCount < diffSize; diffCount++) {
+							
+							fileFound = false;
+							
+							for(snapCount = 0; snapCount < snapSize; snapCount++) {
+								
+								// Checks if snap.txt or diff.txt is found so that they are not outputed to client as new files
+								if(strncmp(globals.diffFn[diffCount], "snap.txt", BUFFSIZE) == 0 || strncmp(globals.diffFn[diffCount], "diff.txt", BUFFSIZE) == 0) {
+									fileFound = true;
+								}
+								else if(strncmp(globals.snapFn[snapCount], globals.diffFn[diffCount], BUFFSIZE) == 0) {
+									fileFound = true;
+								}
+								
+							}
+							// File found in diff hash was not found in snap (file added)
+							if(fileFound == false) {
+								writeStrToFd(connSockFd, ("%s", globals.diffFn[diffCount]));
+								writeStrToFd(connSockFd, " - was added\n");
+							}
+							
+						}
+						
+						if (status == -1) {
+							die("Error in snap pclose: %s", strerror(errno));
+						}
+						else if (status == 0) {
+							printf("snap status code: %d\n", status);
+							printf("Execution successful\n");
+							writeStrToFd(connSockFd, "OK\n");
+						}
+						// Directory found (ignored by md5sum hash)
+						else if (status == 256) {
+							printf("snap status code: %d\n", status);
+							printf("Execution successful\n");
+							writeStrToFd(connSockFd, "Found a directory\n");
+							writeStrToFd(connSockFd, "OK\n");
+						}
+						else {
+							printf("snap status code: %d\n", status);
+							printf("Execution unsuccessful\n");
+							writeStrToFd(connSockFd, "Error in snap execution\n");
+						}
+						
+					}
+					else {
+						writeStrToFd(connSockFd, "ERROR: no snapshot\n");
+					}
+
 				}
 				/* who: list user[s] currently logged in */
 				else if (strcmp(globals.buffer, "who") == 0) {
