@@ -516,6 +516,8 @@ int main( int argc, char ** argv)
 					
 				}
 				/* diff: Compare the contents of the current directory to the saved sanpshot */
+				
+				
 				else if (strcmp(globals.buffer, "diff") == 0) {
 					
 					// Checks that snap.txt exists (snapshot previously used)
@@ -523,7 +525,6 @@ int main( int argc, char ** argv)
 						
 						char *filePath = realpath("snap.txt", globals.snapPath); // Gets file path of snap.txt
 						printf("Snapshot path: %s\n", globals.snapPath);
-						pathSet = true;
 						
 					}
 					if(access(globals.snapPath, F_OK) != -1) {
